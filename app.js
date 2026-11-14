@@ -236,7 +236,7 @@ async function generate() {
     for(let i=0;i<count;i++){
       if(token!==job)return;
       const planeY=minY+dy*(i+.5);
-      made.push(generateSlice(model,res,planeY,dir));
+      made.push(generateSlice(model,res,planeY,dir,dy));
       if(i%2===1||i===count-1){
         status('Generating '+(i+1)+' / '+count+' layers…');
         await nextFrame();
