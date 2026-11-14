@@ -11,6 +11,8 @@ const $ = id => document.getElementById(id);
 const ui = {
   file:$('modelFile'), drop:$('dropzone'),demo:$('demoBtn'),
   layers:$('layers'),layersOut:$('layersOut'),resolution:$('resolution'),
+  resolutionSlider:$('resolutionSlider'),resolutionOut:$('resolutionOut'),
+  atlasEstimate:$('atlasEstimate'),resolutionPresets:[...document.querySelectorAll('[data-resolution]')],
   direction:$('direction'),directionOut:$('directionOut'),
   extrude:$('extrude'),thickness:$('thickness'),thicknessOut:$('thicknessOut'),
   thicknessSetting:$('thicknessSetting'),generate:$('generateBtn'),
@@ -30,6 +32,51 @@ rangeLabel(ui.thickness,ui.thicknessOut,'%');rangeLabel(ui.speed,ui.speedOut,'%'
 for(const [input,out,suffix] of [[ui.layers,ui.layersOut,''],[ui.direction,ui.directionOut,'%'],
                                   [ui.thickness,ui.thicknessOut,'%'],[ui.speed,ui.speedOut,'%']])
   input.addEventListener('input',()=>rangeLabel(input,out,suffix));
+const SPRITE_RESOLUTIONS=[16,24,32,48,64,96,128,192,256];
+function clampResolution(value){
+  const number=Number.parseFloat(value);
+  return Number.isFinite(number)?Math.max(16,Math.min(256,Math.round(number))):96;
+}
+function updateAtlasEstimate(){
+  const count=+ui.layers.value;
+  const res=clampResolution(ui.resolution.value);
+  const columns=Math.ceil(Math.sqrt(count));
+  const rows=Math.ceil(count/columns);
+  const cell=res+4; // Two pixels of transparent padding on each edge.
+  ui.atlasEstimate.textContent='EST. ATLAS '+(cell*columns)+' × '+(cell*rows)+' PX · '+columns+' COLS × '+rows+' ROWS';
+}
+function syncResolutionUI(){
+  const res=clampResolution(ui.resolution.value);
+  ui.resolutionOut.textContent=res+' × '+res+' px';
+  let nearest=0;
+  for(let i=1;i<SPRITE_RESOLUTIONS.length;i++){
+    if(Math.abs(SPRITE_RESOLUTIONS[i]-res)<Math.abs(SPRITE_RESOLUTIONS[nearest]-res))nearest=i;
+  }
+  ui.resolutionSlider.value=String(nearest);
+  ui.resolutionPresets.forEach(button=>{
+    const selected=+button.dataset.resolution===res;
+    button.classList.toggle('active',selected);
+    button.setAttribute('aria-pressed',String(selected));
+  });
+  updateAtlasEstimate();
+}
+function setResolution(value,regenerate=false){
+  ui.resolution.value=String(clampResolution(value));
+  syncResolutionUI();
+  if(regenerate&&model)generate();
+}
+// Live labels/estimated atlas update while dragging, but only re-slice on release.
+ui.resolutionSlider.addEventListener('input',()=>setResolution(SPRITE_RESOLUTIONS[+ui.resolutionSlider.value]));
+ui.resolutionSlider.addEventListener('change',()=>{if(model)generate();});
+ui.resolution.addEventListener('input',()=>{
+  const v=Number(ui.resolution.value);
+  if(ui.resolution.value.trim()!==''&&Number.isFinite(v)&&v>=16&&v<=256)syncResolutionUI();
+});
+ui.resolution.addEventListener('change',()=>setResolution(ui.resolution.value,true));
+ui.resolutionPresets.forEach(button=>button.addEventListener('click',()=>setResolution(button.dataset.resolution,true)));
+ui.layers.addEventListener('input',updateAtlasEstimate);
+syncResolutionUI();
+
 ui.extrude.addEventListener('change',()=>{
   ui.thicknessSetting.style.opacity=ui.extrude.checked?'1':'.45';
   if(slices.length)rebuildStack();
@@ -40,7 +87,7 @@ ui.pause.addEventListener('click',()=>{
   spinning=!spinning;ui.pause.textContent=spinning?'Ⅱ':'▶';
   ui.pause.setAttribute('aria-label',spinning?'Pause rotation':'Resume rotation');
 });
-for(const el of [ui.layers,ui.resolution,ui.direction])el.addEventListener('change',()=>{if(model)generate();});
+for(const el of [ui.layers,ui.direction])el.addEventListener('change',()=>{if(model)generate();});
 ui.generate.addEventListener('click',generate);
 ui.demo.addEventListener('click',loadDemo);
 
@@ -179,7 +226,7 @@ function nextFrame(){return new Promise(resolve=>requestAnimationFrame(resolve))
 async function generate() {
   if(!model)return;
   const token=++job;
-  const count=+ui.layers.value,res=+ui.resolution.value,dir=+ui.direction.value/100;
+  const count=+ui.layers.value,res=clampResolution(ui.resolution.value),dir=+ui.direction.value/100;
   ui.generate.disabled=true;ui.png.disabled=true;ui.json.disabled=true;
   const made=[];
   try {
@@ -296,7 +343,7 @@ function rebuildStack(){
     turntable.add(wall);
   }
   grid.position.y=model.bounds.minY-.09;
-  ui.previewNote.textContent=slices.length+' SPRITES · '+(ui.extrude.checked?'EXTRUDED':'FLAT');
+  ui.previewNote.textContent=slices.length+' SPRITES · '+slices[0].width+'² PX · '+(ui.extrude.checked?'EXTRUDED':'FLAT');
   viewHeight=Math.max(model.bounds.height*1.8,model.bounds.width*1.62,2.7);
   resize();
 }
