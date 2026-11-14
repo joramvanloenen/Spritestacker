@@ -13,6 +13,8 @@ Browser-based **3D model to sprite stack** converter. Import GLB, GLTF, OBJ (+ M
 - Extruded layer preview: generates vertical side-wall geometry for each exposed texel edge. With thickness set to 100% or more, adjacent layers overlap to prevent visible cracks.
 - Animated 45° azimuth orthographic view, orbit/zoom, PNG atlas export, and JSON metadata.
 - Adjustable layers, sprite resolution (16–256 px, slider, presets and custom exact pixel size), fill direction influence, layer slab thickness, rotation speed. Live atlas dimension estimate reflects both resolution and layer count.
+- **Looping GIF turntable:** export 24–72 frames of a full 360° rotation at 256/384/512 px and selectable playback speed. Frame 360° is excluded, making the animation join seamlessly to frame 0, while the GIF repeat flag loops forever.
+- **Shared preview/export environment:** choose a solid background color and show or hide the ground grid. Both settings affect the preview and the exported GIF.
 - Entirely local browser processing with no server-side model uploads. A sample rover is included.
 
 ## How to use
@@ -21,6 +23,7 @@ Browser-based **3D model to sprite stack** converter. Import GLB, GLTF, OBJ (+ M
 2. Set layer count, resolution and inward-normal influence; click **Generate sprite stack**.
 3. Adjust **Extrude each layer** and slab thickness without regenerating the atlas.
 4. Inspect one layer, rotate the preview, export PNG atlas and matching JSON.
+5. Set the background and grid visibility in the Export panel. Choose GIF size, frame count and frame rate, then click **Export looping GIF**.
 
 The atlas has a two-pixel margin around tiles. Each tile uses the same square footprint so stacking aligns. JSON includes tile coordinates, slice heights, world-space dimensions, and output settings.
 
@@ -36,4 +39,4 @@ Needs a model with vertical extent and triangles. Non-manifold/open models may p
 
 ## Deployment
 
-This is a static app (Three.js via CDN); no build step. The repository includes `.github/workflows/deploy.yml`, which publishes on push. GitHub Pages must be enabled **once** in **Settings → Pages → Build and deployment → Source: GitHub Actions**. The default `GITHUB_TOKEN` cannot enable Pages when the site has not been provisioned. After enabling, rerun the workflow if the initial run failed.
+This is a static app (Three.js via CDN and gifenc 1.0.3 via jsDelivr, loaded on demand); no build step. The repository includes `.github/workflows/deploy.yml`, which publishes on push. GitHub Pages must be enabled **once** in **Settings → Pages → Build and deployment → Source: GitHub Actions**. The default `GITHUB_TOKEN` cannot enable Pages when the site has not been provisioned. After enabling, rerun the workflow if the initial run failed.
