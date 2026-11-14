@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101317">
+  <meta name="description" content="Convert 3D models into layered pixel-art sprite stacks, with normal-guided interior filling and gap-free extrusion.">
+  <title>Spritestacker — 3D to layered pixel art</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="importmap">
+  { "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/"
+  }}
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark"><span></span><span></span><span></span></div><div><strong>SPRITESTACKER</strong><small>3D → LAYERED PIXEL ART</small></div></div>
+    <span class="version">BROWSER STUDIO <b>01</b></span>
+    <a class="source" href="https://github.com/joramvanloenen/Spritestacker" target="_blank" rel="noopener">SOURCE ↗</a>
+  </header>
+  <main class="workspace">
+    <aside class="sidebar">
+      <section class="group">
+        <div class="section-heading"><span>01</span><h2>Source model</h2></div>
+        <div class="upload" id="dropzone" tabindex="0" role="button" aria-label="Upload 3D model">
+          <input type="file" id="modelFile" accept=".glb,.gltf,.obj,.stl,.fbx,.mtl,.png,.jpg,.jpeg,.webp" multiple hidden>
+          <div class="upload-icon">↥</div>
+          <strong>Drop a 3D model</strong><p>or click to browse files</p>
+          <small>GLB · GLTF · OBJ · STL · FBX</small>
+        </div>
+        <div class="model-info"><div class="small-label">ACTIVE MODEL</div><div class="model-title" id="modelName">Demo · Survey Rover</div><div class="model-detail" id="modelStats">Procedural sample model</div></div>
+        <button class="minor-btn" id="demoBtn">↺ &nbsp; Restore demo model</button>
+      </section>
+      <section class="group">
+        <div class="section-heading"><span>02</span><h2>Slice settings</h2></div>
+        <label class="setting"><div><span>Layers</span><output id="layersOut">24</output></div><input id="layers" type="range" min="4" max="96" step="1" value="24"></label>
+        <div class="setting select-setting"><label for="resolution">Pixels per slice</label><select id="resolution"><option>48</option><option>64</option><option selected>96</option><option>128</option><option>192</option><option>256</option></select></div>
+        <label class="setting"><div><span>Inward normal influence</span><output id="directionOut">75%</output></div><input id="direction" type="range" min="0" max="100" step="5" value="75"></label>
+        <p class="hint">Projects boundary colors into the solid interior, preferentially following each polygon's inward-facing normal. Enclosed cavities are filled too.</p>
+        <label class="switch-setting"><div><strong>Extrude each layer</strong><small>Make each sprite a solid slab</small></div><input id="extrude" type="checkbox" checked><span class="switch"></span></label>
+        <label class="setting" id="thicknessSetting"><div><span>Slab thickness</span><output id="thicknessOut">105%</output></div><input id="thickness" type="range" min="30" max="140" step="5" value="105"></label>
+        <button class="primary-btn" id="generateBtn"><span>✦</span> Generate sprite stack</button>
+        <div class="status" id="status" aria-live="polite">Ready to slice</div>
+      </section>
+      <section class="group export-group">
+        <div class="section-heading"><span>03</span><h2>Export</h2></div>
+        <div class="export-buttons">
+          <button id="pngBtn" disabled>↓ &nbsp; Sprite atlas <em>PNG</em></button>
+          <button id="jsonBtn" disabled>↓ &nbsp; Atlas metadata <em>JSON</em></button>
+        </div>
+        <p class="hint">Transparent atlas, consistent tile bounds, bottom-to-top layer order. All processing stays on your device.</p>
+      </section>
+    </aside>
+    <section class="content">
+      <div class="preview-header"><div><span class="eyebrow">LIVE VIEWPORT</span><h1>Sprite stack <span>preview</span></h1></div><div class="live"><i></i> LIVE RENDER</div></div>
+      <div class="preview-panel">
+        <canvas id="scene" aria-label="Rotating three-dimensional sprite stack preview"></canvas>
+        <div class="preview-overlay top-left"><span class="crosshair">⌖</span> ORTHOGRAPHIC · 45° AZIMUTH</div>
+        <div class="preview-overlay bottom-left">DRAG TO ORBIT <span>·</span> SCROLL TO ZOOM</div>
+        <div class="preview-overlay bottom-right" id="previewNote">24 SPRITES · EXTRUDED</div>
+        <div class="preview-controls">
+          <label for="speed">ROTATION <output id="speedOut">35%</output></label>
+          <input id="speed" type="range" min="0" max="100" step="5" value="35">
+          <button id="pauseBtn" title="Pause or resume rotation" aria-label="Pause rotation">Ⅱ</button>
+        </div>
+      </div>
+      <div class="bottom-grid">
+        <section class="atlas-panel">
+          <div class="panel-heading"><div><span class="eyebrow">TEXTURE OUTPUT</span><h2>Generated atlas</h2></div><span class="panel-data" id="atlasSize">NO ATLAS</span></div>
+          <div class="atlas-scroll"><canvas id="atlas" aria-label="Generated sprite atlas with transparent checkerboard"></canvas><div class="empty-atlas" id="atlasEmpty">Your slice texture atlas will appear here.</div></div>
+        </section>
+        <section class="details-panel">
+          <div class="panel-heading"><div><span class="eyebrow">PROCESS INSPECTOR</span><h2>Slice explorer</h2></div><span class="panel-data" id="sliceIndex">—</span></div>
+          <div class="slice-preview"><canvas id="sliceCanvas" aria-label="Individual top-down slice preview"></canvas></div>
+          <input id="sliceInspect" type="range" min="0" max="23" value="12" aria-label="Choose preview layer">
+          <div class="slice-footer"><span>BOTTOM</span><span>TOP</span></div>
+        </section>
+      </div>
+      <footer class="footer"><span>MODEL → HORIZONTAL CROSS-SECTIONS → NORMAL-GUIDED COLOR FILL → ATLAS</span><span>MADE FOR PIXEL ART & GAME TOOLS</span></footer>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
