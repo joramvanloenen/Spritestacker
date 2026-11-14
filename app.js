@@ -123,10 +123,10 @@ async function useModel(root,name) {
     ui.stats.textContent=model.meshCount+' meshes · '+model.triangleCount.toLocaleString()+' triangles';
     if(model.triangleCount>250000) status('Large model — slicing can take a while');
     await generate();
-  }catch(err){console.error(err);status(err.message||'Model loading failed',true);}
+  }catch(err){console.error(err);ui.generate.disabled=false;status(err.message||'Model loading failed',true);}
 }
 
-ui.drop.addEventListener('click',()=>ui.file.click());
+ui.drop.addEventListener('click',e=>{if(e.target!==ui.file)ui.file.click();});
 ui.drop.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();ui.file.click();}});
 ui.file.addEventListener('change',()=>loadFiles([...ui.file.files]));
 for(const ev of ['dragenter','dragover'])ui.drop.addEventListener(ev,e=>{e.preventDefault();ui.drop.classList.add('dragging');});
@@ -171,7 +171,7 @@ async function loadFiles(files) {
     sourceName=safeFileName(file.name);
     ui.name.textContent=file.name;
     await useModel(root,sourceName);
-  }catch(err){console.error(err);status('Import failed: '+(err.message||err),true);}
+  }catch(err){console.error(err);ui.generate.disabled=false;status('Import failed: '+(err.message||err),true);}
   finally {setTimeout(()=>{for(const url of blobs.values())URL.revokeObjectURL(url);},5000);}
 }
 
