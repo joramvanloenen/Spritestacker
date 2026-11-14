@@ -167,7 +167,7 @@ async function useModel(root,name) {
   try {
     status('Preparing geometry…');
     model=extractTriangles(root);
-    ui.stats.textContent=model.meshCount+' meshes · '+model.triangleCount.toLocaleString()+' triangles';
+    ui.stats.textContent=model.meshCount+' meshes · '+model.triangleCount.toLocaleString()+' triangles · '+(model.textureCount?model.textureCount+' diffuse texture'+(model.textureCount===1?'':'s'):'NO DIFFUSE TEXTURES');
     if(model.triangleCount>250000) status('Large model — slicing can take a while');
     await generate();
   }catch(err){console.error(err);ui.generate.disabled=false;status(err.message||'Model loading failed',true);}
