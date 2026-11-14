@@ -65,6 +65,25 @@
           <button id="jsonBtn" disabled>↓ &nbsp; Atlas metadata <em>JSON</em></button>
         </div>
         <p class="hint">Transparent atlas, consistent tile bounds, bottom-to-top layer order. All processing stays on your device.</p>
+        <div class="export-divider"></div>
+        <div class="gif-heading"><strong>Turntable animation</strong><span>SEAMLESS LOOP</span></div>
+        <div class="gif-render-options">
+          <label class="gif-background" for="bgColor"><span>Background color</span><span class="color-control"><input type="color" id="bgColor" value="#1b252b" aria-label="Preview and GIF background color"><output id="bgHex" for="bgColor">#1B252B</output></span></label>
+          <label class="gif-grid"><span>Show ground grid</span><input id="gridToggle" type="checkbox" checked><span class="gif-switch"></span></label>
+        </div>
+        <div class="gif-selects">
+          <label for="gifSize">GIF resolution
+            <select id="gifSize"><option value="256">256 × 256</option><option value="384" selected>384 × 384</option><option value="512">512 × 512</option></select>
+          </label>
+          <label for="gifFrames">Turntable frames
+            <select id="gifFrames"><option value="24">24 frames</option><option value="36">36 frames</option><option value="48" selected>48 frames</option><option value="72">72 frames</option></select>
+          </label>
+          <label for="gifFps">Playback speed
+            <select id="gifFps"><option value="10">10 fps</option><option value="15">15 fps</option><option value="20" selected>20 fps</option><option value="25">25 fps</option></select>
+          </label>
+        </div>
+        <button class="gif-export-btn" id="gifBtn" disabled>↻ &nbsp; Export looping GIF <em>GIF</em></button>
+        <div class="gif-status" id="gifStatus" role="status" aria-live="polite">ONE COMPLETE 360° ROTATION · LOOPS FOREVER</div>
       </section>
     </aside>
     <section class="content">
