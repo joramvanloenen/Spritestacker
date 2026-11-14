@@ -36,7 +36,21 @@
       <section class="group">
         <div class="section-heading"><span>02</span><h2>Slice settings</h2></div>
         <label class="setting"><div><span>Layers</span><output id="layersOut">24</output></div><input id="layers" type="range" min="4" max="96" step="1" value="24"></label>
-        <div class="setting select-setting"><label for="resolution">Pixels per slice</label><select id="resolution"><option>48</option><option>64</option><option selected>96</option><option>128</option><option>192</option><option>256</option></select></div>
+        <div class="resolution-control">
+          <div class="resolution-heading"><label for="resolutionSlider">Sprite resolution</label><output id="resolutionOut" for="resolutionSlider resolution">96 × 96 px</output></div>
+          <input id="resolutionSlider" type="range" min="0" max="8" step="1" value="5" aria-label="Sprite resolution preset slider">
+          <div class="resolution-ends"><span>16 PX</span><span>256 PX</span></div>
+          <div class="resolution-presets" role="group" aria-label="Quick sprite resolution presets">
+            <button type="button" data-resolution="32">32²</button>
+            <button type="button" data-resolution="64">64²</button>
+            <button type="button" data-resolution="96" class="active" aria-pressed="true">96²</button>
+            <button type="button" data-resolution="128">128²</button>
+            <button type="button" data-resolution="256">256²</button>
+          </div>
+          <label class="resolution-custom" for="resolution"><span>Custom pixel size</span><span class="pixel-input"><input id="resolution" type="number" min="16" max="256" step="1" value="96" inputmode="numeric" aria-describedby="atlasEstimate"><span>PX × PX</span></span></label>
+          <div class="resolution-estimate" id="atlasEstimate" aria-live="polite">EST. ATLAS 504 × 448 PX</div>
+          <p class="hint resolution-hint">Each slice is a square top-down image. Higher resolutions preserve more detail but take longer to generate.</p>
+        </div>
         <label class="setting"><div><span>Inward normal influence</span><output id="directionOut">75%</output></div><input id="direction" type="range" min="0" max="100" step="5" value="75"></label>
         <p class="hint">Projects boundary colors into the solid interior, preferentially following each polygon's inward-facing normal. Enclosed cavities are filled too.</p>
         <label class="switch-setting"><div><strong>Extrude each layer</strong><small>Make each sprite a solid slab</small></div><input id="extrude" type="checkbox" checked><span class="switch"></span></label>
