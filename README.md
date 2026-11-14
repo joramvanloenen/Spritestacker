@@ -12,7 +12,7 @@ Browser-based **3D model to sprite stack** converter. Import GLB, GLTF, OBJ (+ M
 - Independent closed contour fill: converts internal cavities and other enclosed regions into continuous colored silhouette.
 - Extruded layer preview: generates vertical side-wall geometry for each exposed texel edge. With thickness set to 100% or more, adjacent layers overlap to prevent visible cracks.
 - Animated 45° azimuth orthographic view, orbit/zoom, PNG atlas export, and JSON metadata.
-- Adjustable layers, resolution, fill direction influence, layer slab thickness, rotation speed.
+- Adjustable layers, sprite resolution (16–256 px, slider, presets and custom exact pixel size), fill direction influence, layer slab thickness, rotation speed. Live atlas dimension estimate reflects both resolution and layer count.
 - Entirely local browser processing with no server-side model uploads. A sample rover is included.
 
 ## How to use
