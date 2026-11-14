@@ -4,7 +4,10 @@ import * as THREE from 'three';
 // rotated parts and differently scaled meshes all produce the same slice grid.
 const scratchUV = new THREE.Vector2();
 const imageCache = new WeakMap();
+const defaultColor = new THREE.Color('#b6b9b8');
 const clampByte = v => Math.max(0, Math.min(255, Math.round(v)));
+const srgbToLinear = v => v < 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+const linearToSrgb = v => v < 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
 
 function texturePixels(texture) {
   if (!texture?.image) return null;
@@ -14,35 +17,52 @@ function texturePixels(texture) {
     const img = texture.image;
     const width = img.width || img.videoWidth, height = img.height || img.videoHeight;
     if (width && height) {
-      const canvas = document.createElement('canvas');
-      canvas.width = width; canvas.height = height;
-      const ctx = canvas.getContext('2d', {willReadFrequently:true});
-      ctx.drawImage(img, 0, 0, width, height);
-      pixels = { data:ctx.getImageData(0,0,width,height).data, width, height };
+      if (img.data && (img.data instanceof Uint8Array || img.data instanceof Uint8ClampedArray)) {
+        // Direct pixel access for supported DataTexture assets.
+        pixels = {data:img.data, width, height};
+      } else {
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d', {willReadFrequently:true});
+        ctx.drawImage(img, 0, 0, width, height);
+        pixels = { data:ctx.getImageData(0,0,width,height).data, width, height };
+      }
+      if (texture.matrixAutoUpdate) texture.updateMatrix();
     }
   } catch (err) { console.warn('Cannot sample diffuse map; using base material color', err); }
   imageCache.set(texture, pixels);
   return pixels;
 }
 
-function sampleSurface(mat, a, b, t) {
-  const mix = (k) => a[k] + (b[k] - a[k]) * t;
-  const base = mat?.color || new THREE.Color('#b6b9b8');
-  // THREE stores material colors as linear, while exported PNGs use sRGB.
-  const rgb = base.clone().convertLinearToSRGB();
-  let r = rgb.r * mix('r'), g = rgb.g * mix('g'), bcol = rgb.b * mix('b');
+// Evaluate albedo exactly as the shader does: sRGB texture pixels and linear
+// material/vertex multipliers are combined in LINEAR space, encoded once at output.
+// transformUv() already applies texture.flipY; do not flip the V coordinate again.
+function sampleMaterial(mat, vertex) {
+  const base = mat?.color || defaultColor;
+  let r = base.r * vertex.r, g = base.g * vertex.g, b = base.b * vertex.b;
   const tex = mat?.map;
   const src = tex && texturePixels(tex);
   if (src) {
-    scratchUV.set(mix('u'), mix('v'));
+    const channel = Math.max(0, Math.min(3, tex.channel || 0));
+    const uk = channel ? 'u' + channel : 'u';
+    const vk = channel ? 'v' + channel : 'v';
+    scratchUV.set(vertex[uk] ?? vertex.u, vertex[vk] ?? vertex.v);
     tex.transformUv(scratchUV);
-    const x = Math.min(src.width - 1, Math.max(0, Math.floor(scratchUV.x * src.width)));
-    const v = tex.flipY ? 1 - scratchUV.y : scratchUV.y;
-    const y = Math.min(src.height - 1, Math.max(0, Math.floor(v * src.height)));
+    const x = Math.max(0, Math.min(src.width - 1, Math.floor(scratchUV.x * src.width)));
+    const y = Math.max(0, Math.min(src.height - 1, Math.floor(scratchUV.y * src.height)));
     const p = (y * src.width + x) * 4;
-    r *= src.data[p] / 255; g *= src.data[p+1] / 255; bcol *= src.data[p+2] / 255;
+    const decode = tex.colorSpace === THREE.LinearSRGBColorSpace ? v => v : srgbToLinear;
+    r *= decode(src.data[p] / 255);
+    g *= decode(src.data[p+1] / 255);
+    b *= decode(src.data[p+2] / 255);
   }
-  return [clampByte(r*255), clampByte(g*255), clampByte(bcol*255)];
+  return [clampByte(linearToSrgb(Math.max(0,r))*255),
+          clampByte(linearToSrgb(Math.max(0,g))*255),
+          clampByte(linearToSrgb(Math.max(0,b))*255)];
+}
+
+function sampleSurface(mat, a, b, t) {
+  return sampleMaterial(mat, interpolate(a, b, t));
 }
 
 export function extractTriangles(root) {
@@ -60,7 +80,10 @@ export function extractTriangles(root) {
   let meshCount = 0;
   root.traverse(obj => {
     if (!obj.isMesh || !obj.geometry?.getAttribute('position')) return;
-    const geo = obj.geometry, pos = geo.getAttribute('position'), uv = geo.getAttribute('uv'), vc = geo.getAttribute('color');
+    const geo = obj.geometry, pos = geo.getAttribute('position'),
+      uv = geo.getAttribute('uv'), uv1 = geo.getAttribute('uv1'),
+      uv2 = geo.getAttribute('uv2'), uv3 = geo.getAttribute('uv3'),
+      vc = geo.getAttribute('color');
     const index = geo.index;
     const n = index ? index.count : pos.count;
     const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -69,6 +92,9 @@ export function extractTriangles(root) {
     function vertex(i) {
       v.fromBufferAttribute(pos, i).applyMatrix4(obj.matrixWorld).sub(center).multiplyScalar(scale);
       return {x:v.x,y:v.y,z:v.z,u:uv?uv.getX(i):0,v:uv?uv.getY(i):0,
+        u1:uv1?uv1.getX(i):undefined,v1:uv1?uv1.getY(i):undefined,
+        u2:uv2?uv2.getX(i):undefined,v2:uv2?uv2.getY(i):undefined,
+        u3:uv3?uv3.getX(i):undefined,v3:uv3?uv3.getY(i):undefined,
         r:vc?vc.getX(i):1,g:vc?vc.getY(i):1,b:vc?vc.getZ(i):1};
     }
     for (let j=0; j+2<n; j+=3) {
@@ -92,6 +118,12 @@ export function extractTriangles(root) {
 const interpolate = (a,b,t) => ({
   x:a.x+(b.x-a.x)*t, z:a.z+(b.z-a.z)*t,
   u:a.u+(b.u-a.u)*t, v:a.v+(b.v-a.v)*t,
+  u1:(a.u1??a.u)+((b.u1??b.u)-(a.u1??a.u))*t,
+  v1:(a.v1??a.v)+((b.v1??b.v)-(a.v1??a.v))*t,
+  u2:(a.u2??a.u)+((b.u2??b.u)-(a.u2??a.u))*t,
+  v2:(a.v2??a.v)+((b.v2??b.v)-(a.v2??a.v))*t,
+  u3:(a.u3??a.u)+((b.u3??b.u)-(a.u3??a.u))*t,
+  v3:(a.v3??a.v)+((b.v3??b.v)-(a.v3??a.v))*t,
   r:a.r+(b.r-a.r)*t, g:a.g+(b.g-a.g)*t, b:a.b+(b.b-a.b)*t
 });
 
