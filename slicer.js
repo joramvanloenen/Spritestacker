@@ -1,0 +1,262 @@
+import * as THREE from 'three';
+
+// The source mesh is evaluated in world space so that hierarchy transforms,
+// rotated parts and differently scaled meshes all produce the same slice grid.
+const scratchUV = new THREE.Vector2();
+const imageCache = new WeakMap();
+const clampByte = v => Math.max(0, Math.min(255, Math.round(v)));
+
+function texturePixels(texture) {
+  if (!texture?.image) return null;
+  if (imageCache.has(texture)) return imageCache.get(texture);
+  let pixels = null;
+  try {
+    const img = texture.image;
+    const width = img.width || img.videoWidth, height = img.height || img.videoHeight;
+    if (width && height) {
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d', {willReadFrequently:true});
+      ctx.drawImage(img, 0, 0, width, height);
+      pixels = { data:ctx.getImageData(0,0,width,height).data, width, height };
+    }
+  } catch (err) { console.warn('Cannot sample diffuse map; using base material color', err); }
+  imageCache.set(texture, pixels);
+  return pixels;
+}
+
+function sampleSurface(mat, a, b, t) {
+  const mix = (k) => a[k] + (b[k] - a[k]) * t;
+  const base = mat?.color || new THREE.Color('#b6b9b8');
+  // THREE stores material colors as linear, while exported PNGs use sRGB.
+  const rgb = base.clone().convertLinearToSRGB();
+  let r = rgb.r * mix('r'), g = rgb.g * mix('g'), bcol = rgb.b * mix('b');
+  const tex = mat?.map;
+  const src = tex && texturePixels(tex);
+  if (src) {
+    scratchUV.set(mix('u'), mix('v'));
+    tex.transformUv(scratchUV);
+    const x = Math.min(src.width - 1, Math.max(0, Math.floor(scratchUV.x * src.width)));
+    const v = tex.flipY ? 1 - scratchUV.y : scratchUV.y;
+    const y = Math.min(src.height - 1, Math.max(0, Math.floor(v * src.height)));
+    const p = (y * src.width + x) * 4;
+    r *= src.data[p] / 255; g *= src.data[p+1] / 255; bcol *= src.data[p+2] / 255;
+  }
+  return [clampByte(r*255), clampByte(g*255), clampByte(bcol*255)];
+}
+
+export function extractTriangles(root) {
+  root.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(root);
+  if (bounds.isEmpty()) throw new Error('The file contains no supported polygon geometry.');
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  if (size.y < 1e-8 || Math.max(size.x,size.z) < 1e-8)
+    throw new Error('The model needs 3D volume across the vertical and horizontal axes.');
+  const unit = Math.max(size.x,size.y,size.z);
+  const scale = 2 / unit;
+  const v = new THREE.Vector3();
+  const tris = [];
+  let meshCount = 0;
+  root.traverse(obj => {
+    if (!obj.isMesh || !obj.geometry?.getAttribute('position')) return;
+    const geo = obj.geometry, pos = geo.getAttribute('position'), uv = geo.getAttribute('uv'), vc = geo.getAttribute('color');
+    const index = geo.index;
+    const n = index ? index.count : pos.count;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    const groups = geo.groups || [];
+    meshCount++;
+    function vertex(i) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(obj.matrixWorld).sub(center).multiplyScalar(scale);
+      return {x:v.x,y:v.y,z:v.z,u:uv?uv.getX(i):0,v:uv?uv.getY(i):0,
+        r:vc?vc.getX(i):1,g:vc?vc.getY(i):1,b:vc?vc.getZ(i):1};
+    }
+    for (let j=0; j+2<n; j+=3) {
+      const a=vertex(index?index.getX(j):j);
+      const b=vertex(index?index.getX(j+1):j+1);
+      const c=vertex(index?index.getX(j+2):j+2);
+      const nx=(b.y-a.y)*(c.z-a.z)-(b.z-a.z)*(c.y-a.y);
+      const nz=(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+      const mag=Math.hypot(nx,nz);
+      let m=0;
+      if (mats.length>1) for (const group of groups) if (j>=group.start && j<group.start+group.count) {m=group.materialIndex;break;}
+      tris.push({a,b,c,nx:mag? -nx/mag:0,nz:mag? -nz/mag:0,
+        mat:mats[m]||mats[0],minY:Math.min(a.y,b.y,c.y),maxY:Math.max(a.y,b.y,c.y)});
+    }
+  });
+  if (!tris.length) throw new Error('The model has no triangle faces.');
+  const w = Math.max(size.x,size.z)*scale*1.14;
+  return {tris,bounds:{width:w,depth:w,minY:-size.y*scale/2,maxY:size.y*scale/2,height:size.y*scale},meshCount,triangleCount:tris.length};
+}
+
+const interpolate = (a,b,t) => ({
+  x:a.x+(b.x-a.x)*t, z:a.z+(b.z-a.z)*t,
+  u:a.u+(b.u-a.u)*t, v:a.v+(b.v-a.v)*t,
+  r:a.r+(b.r-a.r)*t, g:a.g+(b.g-a.g)*t, b:a.b+(b.b-a.b)*t
+});
+
+function intersect(tri, y) {
+  if (y <= tri.minY || y >= tri.maxY) return null;
+  const {a,b,c}=tri, list=[];
+  for (const [p,q] of [[a,b],[b,c],[c,a]]) {
+    if ((p.y<=y && q.y>y)||(q.y<=y && p.y>y))
+      list.push(interpolate(p,q,(y-p.y)/(q.y-p.y)));
+  }
+  return list.length===2 ? {a:list[0],b:list[1],nx:tri.nx,nz:tri.nz,mat:tri.mat} : null;
+}
+
+function rasterContours(segments, resolution, width) {
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width=maskCanvas.height=resolution;
+  const ctx=maskCanvas.getContext('2d',{willReadFrequently:true});
+  const toPx = p => ({x:(p.x/width+0.5)*resolution,
+                          y:(p.z/width+0.5)*resolution});
+  const edges = segments.map(s=>({...s,p:toPx(s.a),q:toPx(s.b)}));
+  const key = p => Math.round(p.x*10000)+','+Math.round(p.y*10000);
+  const joined = new Map();
+  edges.forEach((s,i) => {
+    for (const [k,other] of [[key(s.p),'a'],[key(s.q),'b']]) {
+      if(!joined.has(k)) joined.set(k,[]);
+      joined.get(k).push({i,other});
+    }
+  });
+  const seen = new Uint8Array(edges.length);
+  ctx.fillStyle='#fff';
+  let closed=0;
+  // Fill every closed contour independently: inner cavities aren't punched out.
+  // That is intentional for solid-looking sprite stacks from hollow meshes.
+  for(let i=0;i<edges.length;i++){
+    if(seen[i])continue;
+    const start=edges[i].p, pts=[start,edges[i].q];
+    let end=edges[i].q, current=i;
+    seen[i]=1;
+    for(let step=0;step<edges.length;step++){
+      if(key(end)===key(start))break;
+      const options=joined.get(key(end))||[];
+      const next=options.find(o=>!seen[o.i]);
+      if(!next)break;
+      seen[next.i]=1; current=next.i;
+      end=next.other==='a'?edges[current].q:edges[current].p;
+      pts.push(end);
+    }
+    if(pts.length>3 && key(end)===key(start)){
+      closed++;
+      ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+      for(let j=1;j<pts.length;j++)ctx.lineTo(pts[j].x,pts[j].y);
+      ctx.closePath();ctx.fill();
+    }
+  }
+  // Open/non-manifold contour fallback: regular parity scanline rasterization.
+  if(!closed && edges.length){
+    for(let row=0;row<resolution;row++){
+      const y=row+.5, intersections=[];
+      for(const s of edges){
+        if((s.p.y<=y&&s.q.y>y)||(s.q.y<=y&&s.p.y>y))
+          intersections.push(s.p.x+(y-s.p.y)*(s.q.x-s.p.x)/(s.q.y-s.p.y));
+      }
+      intersections.sort((a,b)=>a-b);
+      for(let j=0;j+1<intersections.length;j+=2)
+        ctx.fillRect(intersections[j],row,intersections[j+1]-intersections[j],1);
+    }
+  }
+  const raw=ctx.getImageData(0,0,resolution,resolution).data;
+  const mask=new Uint8Array(resolution*resolution);
+  for(let i=0;i<mask.length;i++)mask[i]=raw[i*4+3]>0?1:0;
+  return {edges,mask};
+}
+
+class MinHeap {
+  constructor(){this.a=[];}
+  push(i,v){
+    const a=this.a;let p=a.length;a.push({i,v});
+    while(p){const q=(p-1)>>1;if(a[q].v<=v)break;a[p]=a[q];p=q;}a[p]={i,v};
+  }
+  pop(){
+    const a=this.a;if(!a.length)return null;
+    const out=a[0],tail=a.pop();
+    if(a.length){let p=0;while(true){
+      const left=p*2+1;if(left>=a.length)break;
+      const right=left+1,small=right<a.length&&a[right].v<a[left].v?right:left;
+      if(a[small].v>=tail.v)break;a[p]=a[small];p=small;
+    }a[p]=tail;}
+    return out;
+  }
+  get length(){return this.a.length;}
+}
+
+export function generateSlice(model, resolution, y, influence=0.75) {
+  const segs=[];
+  for(const tri of model.tris){
+    const s=intersect(tri,y);if(s)segs.push(s);
+  }
+  const canvas=document.createElement('canvas');
+  canvas.width=canvas.height=resolution;
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  if(!segs.length)return canvas;
+  const {edges,mask}=rasterContours(segs,resolution,model.bounds.width);
+  const n=resolution*resolution;
+  const dist=new Float32Array(n).fill(Infinity);
+  const r=new Uint8Array(n),g=new Uint8Array(n),b=new Uint8Array(n);
+  const dirsX=new Float32Array(n),dirsY=new Float32Array(n);
+  const heap=new MinHeap();
+  // Sample the exact textured triangle boundary, not a generic silhouette color.
+  // Seeds carry their original face's inward-projected normal.
+  for(const s of edges){
+    const dx=s.q.x-s.p.x,dy=s.q.y-s.p.y;
+    const steps=Math.max(1,Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))*2));
+    for(let step=0;step<=steps;step++){
+      const t=step/steps;
+      const x=Math.round(s.p.x+dx*t-.5),y=Math.round(s.p.y+dy*t-.5);
+      if(x<0||x>=resolution||y<0||y>=resolution)continue;
+      const i=y*resolution+x;
+      const color=sampleSurface(s.mat,s.a,s.b,t);
+      r[i]=color[0];g[i]=color[1];b[i]=color[2];
+      dirsX[i]=s.nx;dirsY[i]=s.nz;
+      mask[i]=1;dist[i]=0;
+    }
+  }
+  for(let i=0;i<n;i++)if(dist[i]===0)heap.push(i,0);
+  const neighbors=[[-1,0,1],[1,0,1],[0,-1,1],[0,1,1],
+                   [-1,-1,Math.SQRT2],[1,-1,Math.SQRT2],[-1,1,Math.SQRT2],[1,1,Math.SQRT2]];
+  while(heap.length){
+    const popped=heap.pop(),i=popped.i,old=popped.v;
+    if(old>dist[i]+1e-5)continue;
+    const x=i%resolution,y=(i/resolution)|0;
+    for(const [ox,oy,length] of neighbors){
+      const xx=x+ox,yy=y+oy;
+      if(xx<0||yy<0||xx>=resolution||yy>=resolution)continue;
+      const j=yy*resolution+xx;if(!mask[j])continue;
+      const normalDot=(dirsX[i]*ox+dirsY[i]*oy)/length;
+      const directionalPenalty=(1-normalDot)*0.85*influence;
+      const newCost=old+length*(1+directionalPenalty);
+      if(newCost>=dist[j]-1e-5)continue;
+      dist[j]=newCost;
+      r[j]=r[i];g[j]=g[i];b[j]=b[i];
+      dirsX[j]=dirsX[i];dirsY[j]=dirsY[i];
+      heap.push(j,newCost);
+    }
+  }
+  const out=ctx.createImageData(resolution,resolution);
+  for(let i=0;i<n;i++)if(mask[i] && dist[i]<Infinity){
+    out.data[i*4]=r[i];out.data[i*4+1]=g[i];out.data[i*4+2]=b[i];out.data[i*4+3]=255;
+  }
+  ctx.putImageData(out,0,0);
+  return canvas;
+}
+
+export function makeAtlas(slices,resolution,pad=2) {
+  const columns=Math.ceil(Math.sqrt(slices.length));
+  const rows=Math.ceil(slices.length/columns);
+  const cell=resolution+pad*2;
+  const canvas=document.createElement('canvas');
+  canvas.width=cell*columns;canvas.height=cell*rows;
+  const ctx=canvas.getContext('2d');
+  ctx.imageSmoothingEnabled=false;
+  const tiles=[];
+  slices.forEach((slice,i)=>{
+    const x=(i%columns)*cell+pad,y=Math.floor(i/columns)*cell+pad;
+    ctx.drawImage(slice,x,y);
+    tiles.push({index:i,x,y,width:resolution,height:resolution});
+  });
+  return {canvas,columns,rows,tiles,padding:pad};
+}
