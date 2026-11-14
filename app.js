@@ -20,10 +20,13 @@ const ui = {
   png:$('pngBtn'),json:$('jsonBtn'),atlas:$('atlas'),atlasSize:$('atlasSize'),
   atlasEmpty:$('atlasEmpty'),slice:$('sliceCanvas'),sliceInspect:$('sliceInspect'),
   sliceIndex:$('sliceIndex'),speed:$('speed'),speedOut:$('speedOut'),
-  pause:$('pauseBtn'),previewNote:$('previewNote')
+  pause:$('pauseBtn'),previewNote:$('previewNote'),
+  bgColor:$('bgColor'),bgHex:$('bgHex'),gridToggle:$('gridToggle'),
+  gifSize:$('gifSize'),gifFrames:$('gifFrames'),gifFps:$('gifFps'),
+  gifBtn:$('gifBtn'),gifStatus:$('gifStatus')
 };
 let model=null, slices=[], atlas=null, sourceName='survey-rover', job=0;
-let spinning=true, elapsedTime=0;
+let spinning=true, elapsedTime=0, gifExporting=false;
 function status(message,error=false) {ui.status.textContent=message;ui.status.classList.toggle('error',error);}
 function safeFileName(name){return name.replace(/\.[^.]+$/,'').replace(/[^a-z0-9_-]+/gi,'_').toLowerCase()||'model';}
 function rangeLabel(input,out,suffix=''){out.textContent=input.value+suffix;}
@@ -96,6 +99,7 @@ renderer.setClearColor(0x000000,0);
 renderer.outputColorSpace=THREE.SRGBColorSpace;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
 const scene=new THREE.Scene();
+scene.background=new THREE.Color(ui.bgColor.value);
 const camera=new THREE.OrthographicCamera(-2,2,2,-2,.01,100);
 camera.position.set(4,5.15,4);camera.lookAt(0,0,0);
 const controls=new OrbitControls(camera,renderer.domElement);
@@ -104,6 +108,13 @@ controls.minZoom=.4;controls.maxZoom=5;controls.target.set(0,0,0);
 const turntable=new THREE.Group();scene.add(turntable);
 const grid=new THREE.GridHelper(3.8,19,0x526069,0x344047);
 grid.material.transparent=true;grid.material.opacity=.24;grid.position.y=-1.15;scene.add(grid);
+grid.visible=ui.gridToggle.checked;
+ui.bgHex.textContent=ui.bgColor.value.toUpperCase();
+ui.bgColor.addEventListener('input',()=>{
+  scene.background.set(ui.bgColor.value);
+  ui.bgHex.textContent=ui.bgColor.value.toUpperCase();
+});
+ui.gridToggle.addEventListener('change',()=>{grid.visible=ui.gridToggle.checked;});
 let viewHeight=3.4;
 function resize(){
   const box=renderer.domElement.getBoundingClientRect();
@@ -173,7 +184,7 @@ async function useModel(root,name) {
   }catch(err){console.error(err);ui.generate.disabled=false;status(err.message||'Model loading failed',true);}
 }
 
-ui.drop.addEventListener('click',e=>{if(e.target!==ui.file)ui.file.click();});
+ui.drop.addEventListener('click',e=>{if(!gifExporting && e.target!==ui.file)ui.file.click();});
 ui.drop.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();ui.file.click();}});
 ui.file.addEventListener('change',()=>loadFiles([...ui.file.files]));
 for(const ev of ['dragenter','dragover'])ui.drop.addEventListener(ev,e=>{e.preventDefault();ui.drop.classList.add('dragging');});
@@ -181,6 +192,7 @@ for(const ev of ['dragleave','drop'])ui.drop.addEventListener(ev,e=>{e.preventDe
 ui.drop.addEventListener('drop',e=>loadFiles([...e.dataTransfer.files]));
 
 async function loadFiles(files) {
+  if(gifExporting)return;
   const supported=['glb','gltf','obj','stl','fbx'];
   const file=files.find(f=>supported.includes(f.name.split('.').pop().toLowerCase()));
   if(!file){status('Select a GLB, GLTF, OBJ, STL or FBX model.',true);return;}
@@ -227,7 +239,7 @@ async function generate() {
   if(!model)return;
   const token=++job;
   const count=+ui.layers.value,res=clampResolution(ui.resolution.value),dir=+ui.direction.value/100;
-  ui.generate.disabled=true;ui.png.disabled=true;ui.json.disabled=true;
+  ui.generate.disabled=true;ui.png.disabled=true;ui.json.disabled=true;ui.gifBtn.disabled=true;
   const made=[];
   try {
     status('Generating 0 / '+count+' layers…');
@@ -255,7 +267,7 @@ async function generate() {
     ui.sliceInspect.max=count-1;ui.sliceInspect.value=Math.floor(count/2);
     updateSliceInspection();
     rebuildStack();
-    ui.png.disabled=false;ui.json.disabled=false;
+    ui.png.disabled=false;ui.json.disabled=false;ui.gifBtn.disabled=false;
     status('Ready · '+count+' colored slices · '+res+'px each');
   } catch(err){console.error(err);status('Slice generation failed: '+(err.message||err),true);}
   finally {if(token===job)ui.generate.disabled=false;}
@@ -369,4 +381,103 @@ ui.json.addEventListener('click',()=>{
   };
   downloadBlob(new Blob([JSON.stringify(meta,null,2)],{type:'application/json'}),sourceName+'_atlas.json');
 });
+
+const gifControlInputs = [
+  ui.generate,ui.demo,ui.file,ui.layers,ui.resolution,ui.resolutionSlider,
+  ...ui.resolutionPresets,ui.direction,ui.extrude,ui.thickness,
+  ui.png,ui.json,ui.bgColor,ui.gridToggle,ui.gifSize,ui.gifFrames,ui.gifFps
+];
+
+// Render only the scene to an offscreen, square, sRGB WebGL target. This
+// intentionally excludes viewport labels, buttons and HTML overlays.
+async function exportTurntableGIF(){
+  if(gifExporting || !slices.length)return;
+  gifExporting=true;
+  const initialAngle=turntable.rotation.y;
+  const initiallySpinning=spinning;
+  const controlsEnabled=controls.enabled;
+  const previousDisabled=gifControlInputs.map(el=>el.disabled);
+  const originalButtonText=ui.gifBtn.innerHTML;
+  const targets=new Map();
+  spinning=false;
+  controls.enabled=false;
+  gifControlInputs.forEach(el=>el.disabled=true);
+  ui.gifBtn.disabled=true;
+  ui.gifStatus.classList.remove('error');
+
+  try{
+    const size=Number(ui.gifSize.value);
+    const frameCount=Number(ui.gifFrames.value);
+    const fps=Number(ui.gifFps.value);
+    // Preserve the user's chosen orbit direction, zoom and viewing angle.
+    // The clone's square frustum matches the exported square GIF format.
+    const gifCamera=camera.clone();
+    gifCamera.left=-viewHeight/2;
+    gifCamera.right=viewHeight/2;
+    gifCamera.top=viewHeight/2;
+    gifCamera.bottom=-viewHeight/2;
+    gifCamera.updateProjectionMatrix();
+    gifCamera.updateMatrixWorld(true);
+
+    const capture=(fraction,resolution)=>{
+      let target=targets.get(resolution);
+      if(!target){
+        target=new THREE.WebGLRenderTarget(resolution,resolution,{
+          format:THREE.RGBAFormat,
+          type:THREE.UnsignedByteType,
+          depthBuffer:true,
+          stencilBuffer:false,
+          samples:4
+        });
+        target.texture.colorSpace=THREE.SRGBColorSpace;
+        targets.set(resolution,target);
+      }
+      const bottomUp=new Uint8Array(resolution*resolution*4);
+      turntable.rotation.y=initialAngle+Math.PI*2*fraction;
+      try{
+        renderer.setRenderTarget(target);
+        renderer.render(scene,gifCamera);
+        renderer.readRenderTargetPixels(target,0,0,resolution,resolution,bottomUp);
+      }finally{
+        renderer.setRenderTarget(null);
+      }
+      // OpenGL readback is bottom-to-top; GIF images are top-to-bottom.
+      const topDown=new Uint8Array(bottomUp.length);
+      const rowBytes=resolution*4;
+      for(let y=0;y<resolution;y++){
+        const src=(resolution-y-1)*rowBytes;
+        topDown.set(bottomUp.subarray(src,src+rowBytes),y*rowBytes);
+      }
+      return topDown;
+    };
+
+    // Lazy import means the normal editor has no GIF-encoder dependency.
+    const {encodeTurntableGIF}=await import('./gif-export.js');
+    const blob=await encodeTurntableGIF({
+      capture,size,frameCount,fps,
+      onProgress:(message,progress)=>{
+        ui.gifStatus.textContent=message;
+        ui.gifBtn.textContent='Encoding '+Math.round(progress*100)+'%';
+      }
+    });
+    downloadBlob(blob,sourceName+'_turntable.gif');
+    ui.gifStatus.textContent='DONE · '+frameCount+' FRAMES · '+size+'² PX · INFINITE LOOP';
+  }catch(err){
+    console.error('GIF export failed',err);
+    ui.gifStatus.textContent='GIF EXPORT FAILED · '+(err.message||err);
+    ui.gifStatus.classList.add('error');
+  }finally{
+    renderer.setRenderTarget(null);
+    for(const target of targets.values())target.dispose();
+    turntable.rotation.y=initialAngle;
+    spinning=initiallySpinning;
+    controls.enabled=controlsEnabled;
+    gifControlInputs.forEach((el,i)=>el.disabled=previousDisabled[i]);
+    ui.gifBtn.innerHTML=originalButtonText;
+    ui.gifBtn.disabled=!slices.length;
+    gifExporting=false;
+  }
+}
+ui.gifBtn.addEventListener('click',exportTurntableGIF);
+
 loadDemo();
