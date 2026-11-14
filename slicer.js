@@ -18,19 +18,24 @@ function texturePixels(texture) {
     const width = img.width || img.videoWidth, height = img.height || img.videoHeight;
     if (width && height) {
       if (img.data && (img.data instanceof Uint8Array || img.data instanceof Uint8ClampedArray)) {
-        // Direct pixel access for supported DataTexture assets.
-        pixels = {data:img.data, width, height};
+        // DataTextures may have RGB or RGBA channels; don't read the next texel's
+        // red channel as alpha when only three channels are present.
+        const channels = img.data.length / (width * height);
+        if(channels === 3 || channels === 4)
+          pixels = {data:img.data, width, height, channels};
       } else {
         const canvas = document.createElement('canvas');
         canvas.width = width; canvas.height = height;
         const ctx = canvas.getContext('2d', {willReadFrequently:true});
         ctx.drawImage(img, 0, 0, width, height);
-        pixels = { data:ctx.getImageData(0,0,width,height).data, width, height };
+        pixels = { data:ctx.getImageData(0,0,width,height).data, width, height, channels:4 };
       }
       if (texture.matrixAutoUpdate) texture.updateMatrix();
     }
   } catch (err) { console.warn('Cannot sample diffuse map; using base material color', err); }
-  imageCache.set(texture, pixels);
+  // Failed / not-yet-loaded image reads must not be cached permanently.
+  // The loader may finish supplying the bitmap after this slice was requested.
+  if(pixels)imageCache.set(texture, pixels);
   return pixels;
 }
 
@@ -41,20 +46,34 @@ function sampleMaterial(mat, vertex) {
   const base = mat?.color || defaultColor;
   let r = base.r * vertex.r, g = base.g * vertex.g, b = base.b * vertex.b;
   const tex = mat?.map;
-  const src = tex && texturePixels(tex);
-  if (src) {
+  if (tex) {
+    const src=texturePixels(tex);
+    // Returning the material tint alone here can create white specks wherever a
+    // texture image is unavailable or the mesh has missing/invalid UVs.
+    if(!src)return null;
     const channel = Math.max(0, Math.min(3, tex.channel || 0));
     const uk = channel ? 'u' + channel : 'u';
     const vk = channel ? 'v' + channel : 'v';
-    scratchUV.set(vertex[uk] ?? vertex.u, vertex[vk] ?? vertex.v);
+    const u=vertex[uk],v=vertex[vk];
+    if(!Number.isFinite(u)||!Number.isFinite(v))return null;
+    scratchUV.set(u,v);
     tex.transformUv(scratchUV);
+    if(!Number.isFinite(scratchUV.x)||!Number.isFinite(scratchUV.y))return null;
     const x = Math.max(0, Math.min(src.width - 1, Math.floor(scratchUV.x * src.width)));
     const y = Math.max(0, Math.min(src.height - 1, Math.floor(scratchUV.y * src.height)));
-    const p = (y * src.width + x) * 4;
+    const p = (y * src.width + x) * src.channels;
+    const alpha = src.channels===4 ? src.data[p+3]/255 : 1;
+    // Alpha testing belongs to the source material, not to the packed atlas.
+    // Ignore invisible texture texels as seeds and projection candidates.
+    // Opaque materials intentionally ignore the PNG's alpha channel.
+    if((mat?.transparent || (mat?.alphaTest??0)>0) &&
+       alpha*(mat?.opacity??1) <= Math.max(1/255,mat?.alphaTest??0))return null;
     const decode = tex.colorSpace === THREE.LinearSRGBColorSpace ? v => v : srgbToLinear;
     r *= decode(src.data[p] / 255);
     g *= decode(src.data[p+1] / 255);
     b *= decode(src.data[p+2] / 255);
+  } else if (mat?.transparent && (mat?.opacity??1) <= 1/255) {
+    return null;
   }
   return [clampByte(linearToSrgb(Math.max(0,r))*255),
           clampByte(linearToSrgb(Math.max(0,g))*255),
@@ -80,7 +99,7 @@ export function extractTriangles(root) {
   let meshCount = 0;
   const diffuseMaps = new Set();
   root.traverse(obj => {
-    if (!obj.isMesh || !obj.geometry?.getAttribute('position')) return;
+    if (!obj.isMesh || !obj.visible || !obj.geometry?.getAttribute('position')) return;
     const geo = obj.geometry, pos = geo.getAttribute('position'),
       uv = geo.getAttribute('uv'), uv1 = geo.getAttribute('uv1'),
       uv2 = geo.getAttribute('uv2'), uv3 = geo.getAttribute('uv3'),
@@ -92,7 +111,7 @@ export function extractTriangles(root) {
     meshCount++;
     function vertex(i) {
       v.fromBufferAttribute(pos, i).applyMatrix4(obj.matrixWorld).sub(center).multiplyScalar(scale);
-      return {x:v.x,y:v.y,z:v.z,u:uv?uv.getX(i):0,v:uv?uv.getY(i):0,
+      return {x:v.x,y:v.y,z:v.z,u:uv?uv.getX(i):NaN,v:uv?uv.getY(i):NaN,
         u1:uv1?uv1.getX(i):undefined,v1:uv1?uv1.getY(i):undefined,
         u2:uv2?uv2.getX(i):undefined,v2:uv2?uv2.getY(i):undefined,
         u3:uv3?uv3.getX(i):undefined,v3:uv3?uv3.getY(i):undefined,
@@ -257,7 +276,6 @@ function sampleVisibleFaces(model, resolution, y, layerHeight) {
         if(surfaceY<low || surfaceY>high)continue;
         const pixel=py*resolution+px;
         if(surfaceY<=maxY[pixel])continue;
-        maxY[pixel]=surfaceY;
         const vertex={
           r:a.r*w0+b.r*w1+c.r*w2,
           g:a.g*w0+b.g*w1+c.g*w2,
@@ -272,6 +290,8 @@ function sampleVisibleFaces(model, resolution, y, layerHeight) {
           vertex[vk]=(a[vk]??a.v)*w0+(b[vk]??b.v)*w1+(c[vk]??c.v)*w2;
         }
         const rgb=sampleMaterial(tri.mat,vertex);
+        if(!rgb)continue;
+        maxY[pixel]=surfaceY;
         hits[pixel]=1;
         colors[pixel*3]=rgb[0];
         colors[pixel*3+1]=rgb[1];
@@ -308,6 +328,7 @@ export function generateSlice(model, resolution, y, influence=0.75, layerHeight=
       if(x<0||x>=resolution||y<0||y>=resolution)continue;
       const i=y*resolution+x;
       const color=sampleSurface(s.mat,s.a,s.b,t);
+      if(!color)continue;
       r[i]=color[0];g[i]=color[1];b[i]=color[2];
       dirsX[i]=s.nx;dirsY[i]=s.nz;
       mask[i]=1;dist[i]=0;
