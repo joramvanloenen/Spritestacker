@@ -216,7 +216,70 @@ class MinHeap {
   get length(){return this.a.length;}
 }
 
-export function generateSlice(model, resolution, y, influence=0.75) {
+// Project upward-facing textured triangles that actually occupy this vertical
+// slice. Boundary colors alone cannot reproduce artwork on broad upper faces.
+// Per-pixel height testing selects the uppermost visible surface within the slab.
+// Remaining enclosed areas are still colored by inward-normal dilation.
+function sampleVisibleFaces(model, resolution, y, layerHeight) {
+  const n=resolution*resolution;
+  const hits=new Uint8Array(n);
+  const colors=new Uint8Array(n*3);
+  const maxY=new Float32Array(n).fill(-Infinity);
+  const low=y-layerHeight/2-1e-6, high=y+layerHeight/2+1e-6;
+  const width=model.bounds.width;
+  for (const tri of model.tris) {
+    if(tri.maxY<low || tri.minY>high) continue;
+    const {a,b,c}=tri;
+    const faceY=(b.z-a.z)*(c.x-a.x)-(b.x-a.x)*(c.z-a.z);
+    if(faceY<=1e-10) continue;
+    const ax=(a.x/width+.5)*resolution, ay=(a.z/width+.5)*resolution;
+    const bx=(b.x/width+.5)*resolution, by=(b.z/width+.5)*resolution;
+    const cx=(c.x/width+.5)*resolution, cy=(c.z/width+.5)*resolution;
+    const divisor=(by-cy)*(ax-cx)+(cx-bx)*(ay-cy);
+    if(Math.abs(divisor)<1e-8) continue;
+    const minX=Math.max(0,Math.ceil(Math.min(ax,bx,cx)-.5));
+    const maxX=Math.min(resolution-1,Math.floor(Math.max(ax,bx,cx)-.5));
+    const minZ=Math.max(0,Math.ceil(Math.min(ay,by,cy)-.5));
+    const maxZ=Math.min(resolution-1,Math.floor(Math.max(ay,by,cy)-.5));
+    if(maxX<minX || maxZ<minZ)continue;
+    for(let py=minZ;py<=maxZ;py++){
+      const z=py+.5;
+      for(let px=minX;px<=maxX;px++){
+        const x=px+.5;
+        const w0=((by-cy)*(x-cx)+(cx-bx)*(z-cy))/divisor;
+        const w1=((cy-ay)*(x-cx)+(ax-cx)*(z-cy))/divisor;
+        const w2=1-w0-w1;
+        if(w0<-.00001||w1<-.00001||w2<-.00001)continue;
+        const surfaceY=a.y*w0+b.y*w1+c.y*w2;
+        if(surfaceY<low || surfaceY>high)continue;
+        const pixel=py*resolution+px;
+        if(surfaceY<=maxY[pixel])continue;
+        maxY[pixel]=surfaceY;
+        const vertex={
+          r:a.r*w0+b.r*w1+c.r*w2,
+          g:a.g*w0+b.g*w1+c.g*w2,
+          b:a.b*w0+b.b*w1+c.b*w2,
+          u:a.u*w0+b.u*w1+c.u*w2,
+          v:a.v*w0+b.v*w1+c.v*w2
+        };
+        const channel=tri.mat?.map?.channel||0;
+        if(channel){
+          const uk='u'+channel,vk='v'+channel;
+          vertex[uk]=(a[uk]??a.u)*w0+(b[uk]??b.u)*w1+(c[uk]??c.u)*w2;
+          vertex[vk]=(a[vk]??a.v)*w0+(b[vk]??b.v)*w1+(c[vk]??c.v)*w2;
+        }
+        const rgb=sampleMaterial(tri.mat,vertex);
+        hits[pixel]=1;
+        colors[pixel*3]=rgb[0];
+        colors[pixel*3+1]=rgb[1];
+        colors[pixel*3+2]=rgb[2];
+      }
+    }
+  }
+  return {hits,colors};
+}
+
+export function generateSlice(model, resolution, y, influence=0.75, layerHeight=model.bounds.height/24) {
   const segs=[];
   for(const tri of model.tris){
     const s=intersect(tri,y);if(s)segs.push(s);
@@ -224,8 +287,8 @@ export function generateSlice(model, resolution, y, influence=0.75) {
   const canvas=document.createElement('canvas');
   canvas.width=canvas.height=resolution;
   const ctx=canvas.getContext('2d',{willReadFrequently:true});
-  if(!segs.length)return canvas;
   const {edges,mask}=rasterContours(segs,resolution,model.bounds.width);
+  const surface=sampleVisibleFaces(model,resolution,y,layerHeight);
   const n=resolution*resolution;
   const dist=new Float32Array(n).fill(Infinity);
   const r=new Uint8Array(n),g=new Uint8Array(n),b=new Uint8Array(n);
@@ -271,6 +334,14 @@ export function generateSlice(model, resolution, y, influence=0.75) {
   const out=ctx.createImageData(resolution,resolution);
   for(let i=0;i<n;i++)if(mask[i] && dist[i]<Infinity){
     out.data[i*4]=r[i];out.data[i*4+1]=g[i];out.data[i*4+2]=b[i];out.data[i*4+3]=255;
+  }
+  // Keep authentic texture texels wherever a visible sloped/top face crosses
+  // this slab. Use inward boundary filling only for the remaining volume.
+  for(let i=0;i<n;i++)if(surface.hits[i]){
+    out.data[i*4]=surface.colors[i*3];
+    out.data[i*4+1]=surface.colors[i*3+1];
+    out.data[i*4+2]=surface.colors[i*3+2];
+    out.data[i*4+3]=255;
   }
   ctx.putImageData(out,0,0);
   return canvas;
