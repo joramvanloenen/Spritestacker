@@ -78,6 +78,7 @@ export function extractTriangles(root) {
   const v = new THREE.Vector3();
   const tris = [];
   let meshCount = 0;
+  const diffuseMaps = new Set();
   root.traverse(obj => {
     if (!obj.isMesh || !obj.geometry?.getAttribute('position')) return;
     const geo = obj.geometry, pos = geo.getAttribute('position'),
@@ -106,13 +107,15 @@ export function extractTriangles(root) {
       const mag=Math.hypot(nx,nz);
       let m=0;
       if (mats.length>1) for (const group of groups) if (j>=group.start && j<group.start+group.count) {m=group.materialIndex;break;}
+      const material=mats[m]||mats[0];
+      if(material?.map?.image)diffuseMaps.add(material.map);
       tris.push({a,b,c,nx:mag? -nx/mag:0,nz:mag? -nz/mag:0,
-        mat:mats[m]||mats[0],minY:Math.min(a.y,b.y,c.y),maxY:Math.max(a.y,b.y,c.y)});
+        mat:material,minY:Math.min(a.y,b.y,c.y),maxY:Math.max(a.y,b.y,c.y)});
     }
   });
   if (!tris.length) throw new Error('The model has no triangle faces.');
   const w = Math.max(size.x,size.z)*scale*1.14;
-  return {tris,bounds:{width:w,depth:w,minY:-size.y*scale/2,maxY:size.y*scale/2,height:size.y*scale},meshCount,triangleCount:tris.length};
+  return {tris,bounds:{width:w,depth:w,minY:-size.y*scale/2,maxY:size.y*scale/2,height:size.y*scale},meshCount,triangleCount:tris.length,textureCount:diffuseMaps.size};
 }
 
 const interpolate = (a,b,t) => ({
